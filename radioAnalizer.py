@@ -423,6 +423,30 @@ GOOGLE_SHEETS_ID_INTRANT = os.getenv(
 )
 GOOGLE_SHEETS_RANGE_COINCIDENCIAS = os.getenv('GOOGLE_SHEETS_RANGE', 'Hoja 1!A:G')
 
+
+def resolver_binario_ffmpeg(env_name, exe_name):
+    """Resuelve ffmpeg/ffprobe desde .env, FFMPEG_DIR, C:\\ffmpeg o PATH."""
+    configurado = (os.getenv(env_name, '') or '').strip().strip('"')
+    ffmpeg_dir = (os.getenv('FFMPEG_DIR', '') or '').strip().strip('"')
+    candidatos = []
+    if configurado:
+        candidatos.append(configurado)
+    if ffmpeg_dir:
+        candidatos.append(os.path.join(ffmpeg_dir, exe_name))
+    candidatos.append(os.path.join(r"C:\ffmpeg", exe_name))
+    candidatos.append(exe_name)
+
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        if candidato == exe_name or os.path.exists(candidato):
+            return candidato
+    return exe_name
+
+
+FFMPEG_BIN = resolver_binario_ffmpeg('FFMPEG_PATH', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+FFPROBE_BIN = resolver_binario_ffmpeg('FFPROBE_PATH', 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+
 # === ELIMINA DLLs de CUDA inválidas de Torch ===
 torch_lib = os.path.join(sys.prefix, "Lib", "site-packages", "torch", "lib")
 for dll in glob.glob(os.path.join(torch_lib, "torch_cuda*.dll")):
@@ -5018,7 +5042,7 @@ def enriquecer_tangencial_clip_transcripcion_drive(
                 fin = dtot
                 dur_real = min(dur_real, dtot)
         cmd = [
-            "ffmpeg", "-y", "-ss", str(inicio),
+            FFMPEG_BIN, "-y", "-ss", str(inicio),
             "-t", str(dur_real), "-i", archivo_path,
             "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame",
             clip_final,
@@ -10215,7 +10239,7 @@ def mostrar_archivos_fallidos():
 def obtener_duracion(video_path):
     try:
         res = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
             "-of", "json", video_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return float(json.loads(res.stdout)["format"]["duration"])
@@ -10276,7 +10300,7 @@ def concatenar_intro_y_clip_audio(intro_path, clip_path, func_name="concat_intro
         base, ext = os.path.splitext(clip_path)
         salida_path = f"{base}_con_intro{ext if ext else '.mp3'}"
         cmd = [
-            "ffmpeg", "-y",
+            FFMPEG_BIN, "-y",
             "-i", intro_path,
             "-i", clip_path,
             "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[aout]",
@@ -10674,7 +10698,7 @@ def transcribir_archivo_grande_mp3(audio_path, func_name):
         try:
             with st.spinner("🎵 Convirtiendo audio a MP3 (64kbps, 16kHz, mono)..."):
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", audio_path,
+                    FFMPEG_BIN, "-y", "-i", audio_path,
                     "-ac", "1", "-ar", "16000", "-acodec", "mp3", "-b:a", "64k",
                     audio_mp3
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -12476,7 +12500,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                     
                         # Convertir cualquier audio de entrada a WAV (mono 16k)
                         cmd = [
-                            "ffmpeg", "-y", "-i", archivo_path,
+                            FFMPEG_BIN, "-y", "-i", archivo_path,
                             "-ac", "1", "-ar", "16000", "-f", "wav", audio_path
                         ]
                         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -12495,7 +12519,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                 # Intentar con parámetros más permisivos
                                 _ui_transient("info", "🔄 Intentando con parámetros alternativos...")
                                 cmd_alt = [
-                                    "ffmpeg", "-y", "-i", archivo_path,
+                                    FFMPEG_BIN, "-y", "-i", archivo_path,
                                     "-ac", "1", "-ar", "16000", "-f", "wav", 
                                     "-avoid_negative_ts", "make_zero", audio_path
                                 ]
@@ -12922,7 +12946,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                     try:
                         # Obtener duración del audio original
                         cmd_duracion = [
-                            "ffprobe", "-v", "quiet", "-show_entries", "format=duration", 
+                            FFPROBE_BIN, "-v", "quiet", "-show_entries", "format=duration", 
                             "-of", "csv=p=0", archivo_path
                         ]
                         resultado = subprocess.run(cmd_duracion, capture_output=True, text=True, check=True)
@@ -12966,7 +12990,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                     
                     # Comando para recortar audio con duración exacta
                     cmd = [
-                        "ffmpeg", "-y", "-ss", str(inicio),
+                        FFMPEG_BIN, "-y", "-ss", str(inicio),
                         "-t", str(duracion_clip_real), "-i", archivo_path,
                         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame",
                         clip_path
@@ -13088,7 +13112,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                         clip_audio_path = clip_path.replace(".mp3", "_verify.wav")
                         clip_termino_encontrado = termino
                         verify_cmd = [
-                            "ffmpeg", "-y", "-i", clip_path,
+                            FFMPEG_BIN, "-y", "-i", clip_path,
                             "-ac", "1", "-ar", "16000", "-f", "wav", clip_audio_path
                         ]
                     
@@ -13155,7 +13179,7 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                         MIN_DURACION_CLIP_ENVIO = 90
                         if clip_path and os.path.exists(clip_path):
                             try:
-                                _cmd_dur = ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                                _cmd_dur = [FFPROBE_BIN, "-v", "quiet", "-show_entries", "format=duration",
                                             "-of", "csv=p=0", clip_path]
                                 _res_dur = subprocess.run(_cmd_dur, capture_output=True, text=True)
                                 _dur_clip = float(_res_dur.stdout.strip())
