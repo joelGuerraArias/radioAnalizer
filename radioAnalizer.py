@@ -2805,8 +2805,8 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
     actualizar_flujo_envio_ui(
         flujo_envio,
         12,
-        "omitido",
-        "Se consolida al generar el reporte de sesión al cierre del ciclo",
+        "cumplido",
+        INFORME_GENERAL_RADIO_PATH,
     )
     
     # Resumen final
@@ -5832,16 +5832,35 @@ def verificar_todas_las_apis():
 
 # === GENERAR MD DE COINCIDENCIAS EN CARPETA PROCESADOS ===
 
-def escribir_informe_general_radio(contenido_md):
-    """Actualiza el informe general visible fuera de la carpeta de procesados."""
-    func_name = "escribir_informe_general_radio"
+def append_informe_general_radio(titulo, contenido_md):
+    """Añade una sección al informe general acumulativo del escritorio."""
+    func_name = "append_informe_general_radio"
     try:
         informe_path = INFORME_GENERAL_RADIO_PATH
         os.makedirs(os.path.dirname(informe_path), exist_ok=True)
-        with open(informe_path, "w", encoding="utf-8") as f:
-            f.write(contenido_md)
-        log_info(f"✅ Informe general actualizado: {informe_path}", func_name)
+        existe_con_contenido = os.path.exists(informe_path) and os.path.getsize(informe_path) > 0
+        hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(informe_path, "a", encoding="utf-8") as f:
+            if not existe_con_contenido:
+                f.write("# Informe General RadioAnalizer\n\n")
+                f.write("> Archivo acumulativo de coincidencias, tangenciales y reportes de sesión.\n\n")
+            f.write("\n---\n\n")
+            f.write(f"## {titulo}\n\n")
+            f.write(f"> Registrado: {hora}\n\n")
+            f.write((contenido_md or "").strip())
+            f.write("\n")
+        log_info(f"✅ Informe general anexado: {informe_path}", func_name)
         return True, informe_path
+    except Exception as e:
+        log_exception(func_name, e, "Error anexando informe general")
+        return False, str(e)
+
+
+def escribir_informe_general_radio(contenido_md):
+    """Añade el reporte de sesión completo al informe general acumulativo."""
+    func_name = "escribir_informe_general_radio"
+    try:
+        return append_informe_general_radio("Reporte de sesión completo", contenido_md)
     except Exception as e:
         log_exception(func_name, e, "Error escribiendo informe general")
         return False, str(e)
@@ -6277,6 +6296,11 @@ def generar_analisishoy_md(nombre_archivo, termino_encontrado, contexto_termino=
             with open(ruta_md, 'w', encoding='utf-8') as f:
                 f.write(encabezado + seccion)
 
+        append_informe_general_radio(
+            f"Coincidencia - {termino_encontrado} - {nombre_archivo}",
+            seccion,
+        )
+
         log_info(f"✅ Analisishoy MD actualizado: {ruta_md}", func_name)
         return True, ruta_md
 
@@ -6341,6 +6365,11 @@ def append_analisishoy_menciones_tangenciales(menciones_tangenciales_data):
 """
             with open(ruta_md, 'w', encoding='utf-8') as f:
                 f.write(encabezado + bloque)
+
+        append_informe_general_radio(
+            f"Tangenciales - cierre de ciclo ({len(menciones_tangenciales_data)})",
+            bloque,
+        )
 
         log_info(f"✅ Analisishoy MD: menciones tangenciales añadidas ({len(menciones_tangenciales_data)}): {ruta_md}", func_name)
         return True, ruta_md
