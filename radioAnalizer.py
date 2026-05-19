@@ -574,6 +574,116 @@ def obtener_cliente_default():
         }
     }
 
+
+def crear_flujo_envio_ui(titulo, pasos):
+    """Crea un bloque de trazabilidad de envíos en Streamlit."""
+    flujo = {
+        "titulo": titulo,
+        "pasos": [
+            {"nombre": p, "estado": "pendiente", "detalle": "Pendiente"}
+            for p in pasos
+        ],
+        "placeholder": None,
+    }
+    try:
+        flujo["placeholder"] = st.empty()
+        renderizar_flujo_envio_ui(flujo)
+    except Exception:
+        pass
+    return flujo
+
+
+def renderizar_flujo_envio_ui(flujo):
+    """Renderiza estados de flujo sin interrumpir el procesamiento si la UI no está disponible."""
+    if not flujo or not flujo.get("placeholder"):
+        return
+    iconos = {
+        "pendiente": "⏳",
+        "proceso": "🔄",
+        "cumplido": "✅",
+        "fallido": "❌",
+        "omitido": "⚠️",
+    }
+    try:
+        with flujo["placeholder"].container():
+            st.markdown(f"#### {flujo.get('titulo', 'Flujo de envío')}")
+            for idx, paso in enumerate(flujo.get("pasos", []), 1):
+                estado = paso.get("estado", "pendiente")
+                icono = iconos.get(estado, "•")
+                detalle = paso.get("detalle") or estado
+                st.markdown(f"{idx}. {icono} **{paso.get('nombre', '')}** — {detalle}")
+    except Exception:
+        pass
+
+
+def actualizar_flujo_envio_ui(flujo, indice, estado, detalle):
+    """Actualiza un paso enumerado del flujo de envío."""
+    if not flujo:
+        return
+    try:
+        pasos = flujo.get("pasos", [])
+        if 1 <= int(indice) <= len(pasos):
+            pasos[int(indice) - 1]["estado"] = estado
+            pasos[int(indice) - 1]["detalle"] = detalle
+        renderizar_flujo_envio_ui(flujo)
+    except Exception:
+        pass
+
+
+def crear_flujo_tangencial_item_ui(item_tangencial, cliente):
+    """Muestra trazabilidad inmediata para una mención tangencial individual."""
+    termino = (item_tangencial or {}).get("termino", "?")
+    cliente_nombre = nombre_cliente_mostrar_para_ui(cliente) if cliente else "Cliente no identificado"
+    flujo = crear_flujo_envio_ui(
+        f"Flujo de envío - Tangencial: {termino} ({cliente_nombre})",
+        [
+            "Término detectado",
+            "Clasificación tangencial",
+            "Registro de evidencia",
+            "Enriquecimiento DeepSeek",
+            "Google Drive - MP3",
+            "Google Drive - TXT",
+            "Correo Brevo inmediato",
+            "Google Sheets",
+            "AnalisisHoy MD",
+            "Informe general",
+            "Correo resumen fin de ciclo",
+        ],
+    )
+    actualizar_flujo_envio_ui(flujo, 1, "cumplido", f"Término «{termino}» detectado")
+    actualizar_flujo_envio_ui(flujo, 2, "cumplido", motivo_display_tangencial(item_tangencial))
+    actualizar_flujo_envio_ui(flujo, 3, "cumplido", "Item tangencial creado con archivo, término, motivo y evidencia")
+    return flujo
+
+
+def actualizar_flujo_tangencial_drive_mail_ui(flujo, item_tangencial, mail_tang):
+    """Actualiza Drive/correo inmediato y deja visibles pasos de cierre para tangenciales."""
+    if not flujo:
+        return
+    audio_url = (item_tangencial or {}).get("gdrive_url_audio")
+    txt_url = (item_tangencial or {}).get("gdrive_url_txt")
+    actualizar_flujo_envio_ui(
+        flujo,
+        5,
+        "cumplido" if audio_url else "fallido",
+        audio_url or "MP3 no subido a Drive",
+    )
+    actualizar_flujo_envio_ui(
+        flujo,
+        6,
+        "cumplido" if txt_url else "fallido",
+        txt_url or "TXT no subido a Drive",
+    )
+    if mail_tang is None:
+        actualizar_flujo_envio_ui(flujo, 7, "omitido", "Sin cliente o configuración de correo inmediata")
+    else:
+        ok_mail, msg_mail = mail_tang
+        actualizar_flujo_envio_ui(flujo, 7, "cumplido" if ok_mail else "fallido", msg_mail)
+    actualizar_flujo_envio_ui(flujo, 8, "proceso", "Se registra al cierre del ciclo")
+    actualizar_flujo_envio_ui(flujo, 9, "proceso", "Se agrega al cierre del ciclo")
+    actualizar_flujo_envio_ui(flujo, 10, "proceso", "Se actualiza al generar el reporte de sesión")
+    actualizar_flujo_envio_ui(flujo, 11, "proceso", "Se envía al cierre del ciclo")
+
 def crear_cliente_nuevo(nombre, color='#4CAF50'):
     """Crea un nuevo cliente con configuración vacía"""
     return {
@@ -2370,6 +2480,29 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
     """, unsafe_allow_html=True)
     
     resultados = {}
+    flujo_envio = crear_flujo_envio_ui(
+        f"Flujo de envío - Coincidencia: {termino_encontrado} ({cliente_nombre})",
+        [
+            "Término detectado y cliente identificado",
+            "Clip de coincidencia disponible",
+            "Resumen y contenido preparados",
+            "Telegram",
+            "Webhook",
+            "Correo Brevo",
+            "Google Drive - TXT",
+            "Google Drive - clip",
+            "Supabase",
+            "Google Sheets",
+            "AnalisisHoy MD",
+            "Informe general",
+        ],
+    )
+    actualizar_flujo_envio_ui(
+        flujo_envio,
+        1,
+        "cumplido",
+        f"Término «{termino_encontrado}» asignado a {cliente_nombre}",
+    )
 
     # === RENOMBRAR CLIP CON PREFIJO cc{Termino}_ PARA IDENTIFICAR COINCIDENCIAS ===
     # Formato nuevo: ccTermino_CanalMedio_YYYYMMDD_HHMMSS_Xm00s.mp4
@@ -2403,6 +2536,12 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                 st.success(f"🏷️ Archivo marcado: {nuevo_nombre}")
         except Exception as e_rename:
             log_warning(f"⚠️ No se pudo renombrar el clip: {e_rename}", func_name)
+    actualizar_flujo_envio_ui(
+        flujo_envio,
+        2,
+        "cumplido" if (clip_path and os.path.exists(clip_path)) else "omitido",
+        os.path.basename(clip_path) if (clip_path and os.path.exists(clip_path)) else "Sin clip local disponible",
+    )
 
     # Extraer información del medio
     info_medio_hora = extraer_info_medio_hora(nombre_archivo)
@@ -2441,6 +2580,7 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
     # Para el correo: incluir resumen + transcripción completa sin truncar
     resumen_para_email = f"**RESUMEN EJECUTIVO:**\n{resumen_ejecutivo}\n\n**TRANSCRIPCIÓN DEL CONTENIDO:**\n{transcripcion_completa}" if transcripcion_completa and len(transcripcion_completa.strip()) > 50 else resumen_ejecutivo
     resumen_para_email = capitalizar_marcas_medios_rd_en_texto(resumen_para_email)
+    actualizar_flujo_envio_ui(flujo_envio, 3, "cumplido", "Resumen, contexto y transcripción listos para destinos")
     
     # === 1. ENVIAR A TELEGRAM ===
     if cliente.get('telegram', {}).get('enabled'):
@@ -2452,9 +2592,13 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                     st.success(f"📱 Telegram: {msg}")
                 else:
                     st.warning(f"📱 Telegram: {msg}")
+                actualizar_flujo_envio_ui(flujo_envio, 4, "cumplido" if exito else "fallido", msg)
         except Exception as e:
             log_error_critico(func_name, f"Error inesperado en Telegram: {e}")
             resultados['telegram'] = (False, f"Error: {e}")
+            actualizar_flujo_envio_ui(flujo_envio, 4, "fallido", f"Error: {e}")
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 4, "omitido", "Telegram deshabilitado para este cliente")
     
     # === 2. ENVIAR A WEBHOOK ===
     if cliente.get('webhook', {}).get('enabled'):
@@ -2466,9 +2610,13 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                     st.success(f"🌐 Webhook: {msg}")
                 else:
                     st.warning(f"🌐 Webhook: {msg}")
+                actualizar_flujo_envio_ui(flujo_envio, 5, "cumplido" if exito else "fallido", msg)
         except Exception as e:
             log_error_critico(func_name, f"Error inesperado en Webhook: {e}")
             resultados['webhook'] = (False, f"Error: {e}")
+            actualizar_flujo_envio_ui(flujo_envio, 5, "fallido", f"Error: {e}")
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 5, "omitido", "Webhook deshabilitado para este cliente")
     
     # === 3. ENVIAR A BREVO (EMAIL) ===
     if cliente.get('brevo', {}).get('enabled'):
@@ -2485,9 +2633,13 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                     st.success(f"📧 Brevo: {msg}")
                 else:
                     st.warning(f"📧 Brevo: {msg}")
+                actualizar_flujo_envio_ui(flujo_envio, 6, "cumplido" if exito else "fallido", msg)
         except Exception as e:
             log_error_critico(func_name, f"Error inesperado en Brevo: {e}")
             resultados['brevo'] = (False, f"Error: {e}")
+            actualizar_flujo_envio_ui(flujo_envio, 6, "fallido", f"Error: {e}")
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 6, "omitido", "Brevo deshabilitado para este cliente")
     
     # === 4. ENVIAR A GOOGLE DRIVE ===
     if cliente.get('google_drive', {}).get('enabled'):
@@ -2529,6 +2681,11 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                 st.success(f"☁️ Google Drive: TXT={'✅' if exito_txt else '❌'} Clip={'✅' if exito_video else '❌'}")
             else:
                 st.warning(f"☁️ Google Drive: {msg_txt} | {msg_video}")
+            actualizar_flujo_envio_ui(flujo_envio, 7, "cumplido" if exito_txt else "fallido", msg_txt)
+            actualizar_flujo_envio_ui(flujo_envio, 8, "cumplido" if exito_video else "omitido", msg_video)
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 7, "omitido", "Google Drive deshabilitado para este cliente")
+        actualizar_flujo_envio_ui(flujo_envio, 8, "omitido", "Google Drive deshabilitado para este cliente")
     
     # === 5. ENVIAR A SUPABASE ===
     if cliente.get('supabase', {}).get('enabled'):
@@ -2547,6 +2704,9 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                 st.success(f"🗄️ Supabase: {msg}")
             else:
                 st.warning(f"🗄️ Supabase: {msg}")
+            actualizar_flujo_envio_ui(flujo_envio, 9, "cumplido" if exito else "fallido", msg)
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 9, "omitido", "Supabase deshabilitado para este cliente")
     
     
     # === 6. GOOGLE SHEETS (coincidencias por cliente: JSON o EDESUR/Intrant por .env) ===
@@ -2579,10 +2739,15 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                     st.success(f"📊 Google Sheets: {msg_gs}")
                 else:
                     st.warning(f"📊 Google Sheets: {msg_gs}")
+                formato_gs = "Intrant con columna título" if cliente_id_gs == 'intrant' else "Edesur/default con índice"
+                actualizar_flujo_envio_ui(flujo_envio, 10, "cumplido" if ok_gs else "fallido", f"{formato_gs}: {msg_gs}")
         except Exception as e_gs:
             log_error_critico(func_name, f"Error inesperado Google Sheets: {e_gs}")
             resultados["google_sheets"] = (False, str(e_gs))
             st.warning(f"📊 Google Sheets: {e_gs}")
+            actualizar_flujo_envio_ui(flujo_envio, 10, "fallido", str(e_gs))
+    else:
+        actualizar_flujo_envio_ui(flujo_envio, 10, "omitido", "Google Sheets no configurado para este cliente")
     
     # === GENERAR MD ANALISISHOY ===
     # Guardar todas las coincidencias de la sesión en Analisishoy_YYYYMMDD.md
@@ -2598,12 +2763,21 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
         )
         if ok_md:
             st.success(f"📄 AnalisisHoy MD actualizado: {os.path.basename(ruta_o_error)}")
+            actualizar_flujo_envio_ui(flujo_envio, 11, "cumplido", os.path.basename(ruta_o_error))
         else:
             st.warning(f"⚠️ No se pudo escribir AnalisisHoy MD: {ruta_o_error}")
             log_warning(f"No se pudo escribir AnalisisHoy MD: {ruta_o_error}", "enviar_coincidencia_a_cliente")
+            actualizar_flujo_envio_ui(flujo_envio, 11, "fallido", str(ruta_o_error))
     except Exception as e_md:
         log_warning(f"⚠️ No se pudo generar Analisishoy MD: {e_md}", "enviar_coincidencia_a_cliente")
         st.warning(f"⚠️ AnalisisHoy MD: {e_md}")
+        actualizar_flujo_envio_ui(flujo_envio, 11, "fallido", str(e_md))
+    actualizar_flujo_envio_ui(
+        flujo_envio,
+        12,
+        "omitido",
+        "Se consolida al generar el reporte de sesión al cierre del ciclo",
+    )
     
     # Resumen final
 
@@ -12665,6 +12839,8 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                 rel, termino, razon_t, momento_termino, texto_evidencia=evidencia_tang
                             )
                             menciones_tangenciales_data.append(item_tang)
+                            cliente_tang = obtener_cliente_por_termino(termino)
+                            flujo_tang = crear_flujo_tangencial_item_ui(item_tang, cliente_tang)
                             # Guardar evidencia en audioChecks incluso si la mención es tangencial
                             registrar_audio_check(
                                 origen_audio_path=archivo_path,
@@ -12677,6 +12853,9 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                             )
                             if deepseek_tangenciales_activo():
                                 enriquecer_motivos_tangenciales_deepseek([item_tang], func_name)
+                                actualizar_flujo_envio_ui(flujo_tang, 4, "cumplido", motivo_tangencial_una_frase(item_tang))
+                            else:
+                                actualizar_flujo_envio_ui(flujo_tang, 4, "omitido", "DeepSeek tangenciales desactivado o sin API")
                             enriquecer_tangencial_clip_transcripcion_drive(
                                 item_tang,
                                 archivo_path,
@@ -12690,8 +12869,9 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                 func_name=func_name,
                             )
                             mail_tang = notificar_brevo_tangencial_inmediato_si(
-                                obtener_cliente_por_termino(termino), item_tang, func_name
+                                cliente_tang, item_tang, func_name
                             )
+                            actualizar_flujo_tangencial_drive_mail_ui(flujo_tang, item_tang, mail_tang)
                             if mail_tang is not None:
                                 _ok_m, _msg_m = mail_tang
                                 if _ok_m:
@@ -12849,6 +13029,8 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                         rel, termino, motivo_rel, momento_termino, texto_evidencia=evidencia_rel
                                     )
                                     menciones_tangenciales_data.append(item_tang)
+                                    cliente_tang = obtener_cliente_por_termino(termino)
+                                    flujo_tang = crear_flujo_tangencial_item_ui(item_tang, cliente_tang)
                                     # Guardar evidencia en audioChecks aunque el clip se descarte por relevancia
                                     registrar_audio_check(
                                         origen_audio_path=archivo_path,
@@ -12861,6 +13043,9 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                     )
                                     if deepseek_tangenciales_activo():
                                         enriquecer_motivos_tangenciales_deepseek([item_tang], func_name)
+                                        actualizar_flujo_envio_ui(flujo_tang, 4, "cumplido", motivo_tangencial_una_frase(item_tang))
+                                    else:
+                                        actualizar_flujo_envio_ui(flujo_tang, 4, "omitido", "DeepSeek tangenciales desactivado o sin API")
                                     enriquecer_tangencial_clip_transcripcion_drive(
                                         item_tang,
                                         archivo_path,
@@ -12874,8 +13059,9 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                                         func_name=func_name,
                                     )
                                     mail_tang = notificar_brevo_tangencial_inmediato_si(
-                                        obtener_cliente_por_termino(termino), item_tang, func_name
+                                        cliente_tang, item_tang, func_name
                                     )
+                                    actualizar_flujo_tangencial_drive_mail_ui(flujo_tang, item_tang, mail_tang)
                                     if mail_tang is not None:
                                         _ok_m, _msg_m = mail_tang
                                         if _ok_m:
@@ -13421,9 +13607,33 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
     else:
         st.info("📭 No se procesaron archivos con coincidencias en esta sesión")
 
+    flujo_cierre_tang = None
+    if menciones_tangenciales_data:
+        n_audio_drive = sum(1 for x in menciones_tangenciales_data if x.get('gdrive_url_audio'))
+        n_txt_drive = sum(1 for x in menciones_tangenciales_data if x.get('gdrive_url_txt'))
+        flujo_cierre_tang = crear_flujo_envio_ui(
+            f"Flujo de cierre - Tangenciales ({len(menciones_tangenciales_data)})",
+            [
+                "Tangenciales acumuladas",
+                "DeepSeek final",
+                "Drive MP3",
+                "Drive TXT",
+                "Google Sheets",
+                "Reporte de sesión / informe_general.md",
+                "AnalisisHoy MD",
+                "Correo Brevo resumen",
+            ],
+        )
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 1, "cumplido", f"{len(menciones_tangenciales_data)} menciones tangenciales en el ciclo")
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 3, "cumplido" if n_audio_drive else "fallido", f"{n_audio_drive}/{len(menciones_tangenciales_data)} MP3 con URL Drive")
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 4, "cumplido" if n_txt_drive else "fallido", f"{n_txt_drive}/{len(menciones_tangenciales_data)} TXT con URL Drive")
+
     if menciones_tangenciales_data and deepseek_tangenciales_activo():
         with st.spinner("Profundizando motivos tangenciales (DeepSeek)..."):
             enriquecer_motivos_tangenciales_deepseek(menciones_tangenciales_data, func_name)
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 2, "cumplido", "Motivos enriquecidos o preservados")
+    elif menciones_tangenciales_data:
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 2, "omitido", "DeepSeek tangenciales desactivado o sin API")
 
     if menciones_tangenciales_data:
         try:
@@ -13431,9 +13641,16 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
             exitos_sheets_tang = sum(1 for _, ok, _ in res_sheets_tang if ok)
             if res_sheets_tang:
                 st.info(f"📊 Tangenciales enviadas a Google Sheets: {exitos_sheets_tang}/{len(res_sheets_tang)}")
+            actualizar_flujo_envio_ui(
+                flujo_cierre_tang,
+                5,
+                "cumplido" if exitos_sheets_tang == len(res_sheets_tang) and res_sheets_tang else "fallido",
+                f"{exitos_sheets_tang}/{len(res_sheets_tang)} registros enviados",
+            )
         except Exception as e_sheets_tang:
             st.warning(f"⚠️ Google Sheets (tangenciales): {e_sheets_tang}")
             log_warning(f"Error Google Sheets tangenciales: {e_sheets_tang}", func_name)
+            actualizar_flujo_envio_ui(flujo_cierre_tang, 5, "fallido", str(e_sheets_tang))
 
     # Mostrar solo resultados relevantes de la sesión: coincidencias y tangenciales
     if videos_procesados_data or menciones_tangenciales_data:
@@ -13494,11 +13711,19 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
         if md_sesion_ok:
             st.success(f"📄 **Reporte de sesión guardado:** `{os.path.basename(md_sesion_resultado)}`")
             log_info(f"✅ MD de sesión generado: {md_sesion_resultado}", func_name)
+            actualizar_flujo_envio_ui(
+                flujo_cierre_tang,
+                6,
+                "cumplido" if menciones_tangenciales_data else "omitido",
+                f"Reporte de sesión guardado y {INFORME_GENERAL_RADIO_PATH} actualizado",
+            )
         else:
             st.warning(f"⚠️ Error generando reporte de sesión: {md_sesion_resultado}")
+            actualizar_flujo_envio_ui(flujo_cierre_tang, 6, "fallido", str(md_sesion_resultado))
     except Exception as e:
         st.warning(f"⚠️ Error generando reporte de sesión: {str(e)}")
         log_warning(f"Error generando MD de sesión: {e}", func_name)
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 6, "fallido", str(e))
     
     # === ANALISISHOY MD: menciones tangenciales (mismo formato y orden que la UI) ===
     try:
@@ -13506,12 +13731,20 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
         if ok_tang:
             if ruta_o_err and menciones_tangenciales_data:
                 st.success(f"📄 **AnalisisHoy:** menciones tangenciales añadidas a `{os.path.basename(ruta_o_err)}`")
+            actualizar_flujo_envio_ui(
+                flujo_cierre_tang,
+                7,
+                "cumplido" if menciones_tangenciales_data else "omitido",
+                os.path.basename(ruta_o_err) if ruta_o_err else "Sin tangenciales para registrar",
+            )
         else:
             st.warning(f"⚠️ AnalisisHoy MD (tangenciales): {ruta_o_err}")
             log_warning(f"No se pudo añadir tangenciales a Analisishoy: {ruta_o_err}", func_name)
+            actualizar_flujo_envio_ui(flujo_cierre_tang, 7, "fallido", str(ruta_o_err))
     except Exception as e_tang:
         st.warning(f"⚠️ AnalisisHoy MD (tangenciales): {e_tang}")
         log_warning(f"Error Analisishoy tangenciales: {e_tang}", func_name)
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 7, "fallido", str(e_tang))
     
     # === CORREO BREVO: menciones tangenciales por entidad (fin de ciclo) ===
     try:
@@ -13521,9 +13754,17 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
                 st.success(f"📧 **Brevo (tangenciales)** — {nombre_c}: {msg_c}")
             else:
                 st.info(f"📧 **Brevo (tangenciales)** — {nombre_c}: {msg_c}")
+        ok_resumen = sum(1 for _, ok_c, _ in res_correos_tang if ok_c)
+        actualizar_flujo_envio_ui(
+            flujo_cierre_tang,
+            8,
+            "cumplido" if ok_resumen else ("omitido" if not menciones_tangenciales_data else "fallido"),
+            f"{ok_resumen}/{len(res_correos_tang)} correos resumen enviados" if res_correos_tang else "Sin tangenciales para correo resumen",
+        )
     except Exception as e_mail_tang:
         st.warning(f"⚠️ Correo tangenciales: {e_mail_tang}")
         log_warning(f"Error correo tangenciales fin ciclo: {e_mail_tang}", func_name)
+        actualizar_flujo_envio_ui(flujo_cierre_tang, 8, "fallido", str(e_mail_tang))
     
     # Limpiar referencia de contenedor transitorio para evitar arrastre entre ciclos
     st.session_state.ui_status_container = None
