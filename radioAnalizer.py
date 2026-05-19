@@ -384,6 +384,12 @@ if DEEPSEEK_API_KEY:
 
 # Mistral
 mistral_api_key = os.getenv('MISTRAL_API_KEY', '')
+MISTRAL_TTS_ENDPOINT = os.getenv('MISTRAL_TTS_ENDPOINT', 'https://api.mistral.ai/v1/audio/speech')
+MISTRAL_TTS_MODEL = os.getenv('MISTRAL_TTS_MODEL', 'voxtral-mini-tts-2603')
+MISTRAL_TTS_VOICE_ID = os.getenv(
+    'MISTRAL_TTS_VOICE_ID',
+    os.getenv('MISTRAL_TTS_VOICE', 'mi voz'),
+)
 
 # Gemini 3.0
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
@@ -5056,10 +5062,23 @@ def enriquecer_tangencial_clip_transcripcion_drive(
             log_warning("Tangencial: archivo MP3 no creado", func_name)
             return
 
+    if clip_final and os.path.isfile(clip_final):
+        clip_con_intro, intro_ok = preparar_clip_con_intro_elevenlabs(
+            clip_final, rel, termino, func_name
+        )
+        if intro_ok and clip_con_intro and os.path.isfile(clip_con_intro):
+            clip_final = clip_con_intro
+            item['intro_agregada'] = True
+            log_info(f"Tangencial: intro agregada al MP3 antes de subir: {clip_final}", func_name)
+        else:
+            item['intro_agregada'] = False
+            log_warning("Tangencial: no se pudo agregar intro; se sube MP3 original", func_name)
+
     base_file = os.path.splitext(os.path.basename(clip_final))[0]
     txt_path = os.path.join(os.path.dirname(clip_final), f"{base_file}_transcripcion.txt")
     try:
         bloque_tecnico = f"Motivo (técnico): {ms_extra}\n" if ms_extra else ""
+        bloque_intro = "Intro agregada al audio: sí\n" if item.get('intro_agregada') else "Intro agregada al audio: no\n"
         contenido_txt = (
             f"Mención tangencial — {rel}\n"
             f"Término: {termino}\n"
@@ -5067,6 +5086,7 @@ def enriquecer_tangencial_clip_transcripcion_drive(
             f"Posición en audio (s): {mt}\n"
             f"Motivo (cliente / resumen): {motivo}\n"
             f"{bloque_tecnico}"
+            f"{bloque_intro}"
             f"--- Transcripción / evidencia ---\n{evidencia}\n"
         )
         with open(txt_path, 'w', encoding='utf-8') as f:
@@ -10287,6 +10307,69 @@ def generar_intro_audio_elevenlabs(texto_intro, nombre_base, func_name="elevenla
         log_warning(f"Error generando intro ElevenLabs: {e}", func_name)
         return None
 
+
+def generar_intro_audio_mistral(texto_intro, nombre_base, func_name="mistral_intro"):
+    """
+    Fallback TTS con Mistral. Usa /v1/audio/speech, voice_id y audio_data base64.
+    """
+    if not mistral_api_key:
+        log_warning("Mistral TTS no configurado (MISTRAL_API_KEY faltante)", func_name)
+        return None
+    if not MISTRAL_TTS_ENDPOINT:
+        log_warning("Mistral TTS no configurado (MISTRAL_TTS_ENDPOINT faltante)", func_name)
+        return None
+
+    try:
+        safe_base = re.sub(r"[^\w\-\.]", "_", nombre_base)[:80]
+        intro_path = os.path.join(CARPETA_PROCESADOS, f"{safe_base}_intro_mistral.mp3")
+        payload = {
+            "input": texto_intro,
+            "model": MISTRAL_TTS_MODEL,
+            "voice_id": MISTRAL_TTS_VOICE_ID,
+            "response_format": "mp3",
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {mistral_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        resp = requests.post(MISTRAL_TTS_ENDPOINT, headers=headers, json=payload, timeout=90)
+        if resp.status_code != 200:
+            log_warning(f"Mistral TTS HTTP {resp.status_code}: {resp.text[:240]}", func_name)
+            return None
+
+        audio_bytes = None
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if "application/json" in ctype:
+            data = resp.json()
+            audio_b64 = data.get("audio_data") or data.get("audio") or ""
+            if audio_b64:
+                audio_bytes = base64.b64decode(audio_b64)
+        else:
+            audio_bytes = resp.content
+
+        if not audio_bytes:
+            log_warning("Mistral TTS devolvió audio vacío", func_name)
+            return None
+
+        with open(intro_path, "wb") as f:
+            f.write(audio_bytes)
+
+        if os.path.exists(intro_path) and os.path.getsize(intro_path) > 0:
+            log_info(
+                f"Intro TTS generada con Mistral voice_id='{MISTRAL_TTS_VOICE_ID}': {intro_path}",
+                func_name,
+            )
+            return intro_path
+
+        log_warning("Mistral TTS escribió archivo vacío", func_name)
+        return None
+    except Exception as e:
+        log_warning(f"Error generando intro Mistral TTS: {e}", func_name)
+        return None
+
+
 def concatenar_intro_y_clip_audio(intro_path, clip_path, func_name="concat_intro_audio"):
     """
     Concatena intro + clip y retorna la ruta final o None.
@@ -10333,7 +10416,10 @@ def preparar_clip_con_intro_elevenlabs(clip_path, nombre_archivo, termino_encont
         base_intro = os.path.splitext(os.path.basename(clip_path))[0]
         intro_tts_path = generar_intro_audio_elevenlabs(texto_intro, base_intro, func_name)
         if not intro_tts_path:
-            log_warning("No se pudo generar intro ElevenLabs; se usa clip original", func_name)
+            log_warning("No se pudo generar intro ElevenLabs; intentando fallback Mistral TTS", func_name)
+            intro_tts_path = generar_intro_audio_mistral(texto_intro, base_intro, func_name)
+        if not intro_tts_path:
+            log_warning("No se pudo generar intro con ElevenLabs ni Mistral; se usa clip original", func_name)
             return clip_path, False
         clip_con_intro = concatenar_intro_y_clip_audio(intro_tts_path, clip_path, func_name)
         if clip_con_intro:
