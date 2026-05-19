@@ -447,6 +447,10 @@ CARPETA_PROCESADOS = os.getenv(
     "CARPETA_PROCESADOS",
     os.getenv("RADIO_CARPETA_PROCESADOS", _default_procesados),
 )
+INFORME_GENERAL_RADIO_PATH = os.getenv(
+    "RADIO_INFORME_GENERAL_PATH",
+    os.path.join(os.path.expanduser("~"), "Desktop", "informes", "informe_general.md"),
+)
 # Subcarpeta dentro de AUDIOCHECKS: copias + TXT de evidencia (registrar_audio_check)
 CARPETA_AUDIOCHECKS_EVIDENCIAS = os.path.join(CARPETA_PROCESADOS, "audioChecks")
 ULTIMA_COINCIDENCIA_REENVIO_JSON = os.path.join(CARPETA_PROCESADOS, "ultima_coincidencia_reenvio.json")
@@ -2559,9 +2563,16 @@ def enviar_coincidencia_a_cliente(cliente, nombre_archivo, termino_encontrado, c
                 texto_gs = (transcripcion_segmento or contexto_termino or "").strip() or "Sin texto"
                 sent_gs = analizar_sentimiento_mencion_heuristica(texto_gs)
                 url_gs = (video_url or "").strip()
-                fila = [fecha_gs, "Radio", texto_gs, medio_gs, sent_gs, url_gs]
+                cliente_id_gs = str((cliente or {}).get('id') or '').strip().lower()
+                if cliente_id_gs == 'intrant':
+                    # Hoja Intrant: fecha | periodista | titulo | texto | medio | sentimiento | url
+                    fila = [fecha_gs, "Redaccion", termino_mostrar, texto_gs, medio_gs, sent_gs, url_gs]
+                    incluir_indice_gs = False
+                else:
+                    fila = [fecha_gs, "Radio", texto_gs, medio_gs, sent_gs, url_gs]
+                    incluir_indice_gs = True
                 ok_gs, msg_gs = append_fila_google_sheet(
-                    sheet_id, sheet_range, fila
+                    sheet_id, sheet_range, fila, incluir_indice=incluir_indice_gs
                 )
                 resultados["google_sheets"] = (ok_gs, msg_gs)
                 if ok_gs:
@@ -4528,10 +4539,11 @@ def analizar_sentimiento_mencion_heuristica(texto):
     return 'Neutral'
 
 
-def append_fila_google_sheet(spreadsheet_id, range_a1, fila_valores):
+def append_fila_google_sheet(spreadsheet_id, range_a1, fila_valores, incluir_indice=True):
     """
-    Añade una fila: [# automático] + [fecha, origen, texto, medio, sentimiento, url].
-    fila_valores debe tener 6 elementos.
+    Añade una fila a Google Sheets.
+    - incluir_indice=True: [# automático] + [fecha, origen, texto, medio, sentimiento, url].
+    - incluir_indice=False: fila_valores se envía tal cual (Intrant: fecha, periodista, titulo, texto, medio, sentimiento, url).
     """
     func_name = 'append_fila_google_sheet'
     try:
@@ -4539,15 +4551,20 @@ def append_fila_google_sheet(spreadsheet_id, range_a1, fila_valores):
             return False, 'Sheets: spreadsheet_id vacío'
         if not GOOGLE_REFRESH_TOKEN or not GOOGLE_CLIENT_ID:
             return False, 'Sheets: credenciales Google no configuradas (.env)'
-        if len(fila_valores) != 6:
-            return False, f'Sheets: se esperan 6 valores, llegaron {len(fila_valores)}'
+        esperados = 6 if incluir_indice else 7
+        if len(fila_valores) != esperados:
+            return False, f'Sheets: se esperan {esperados} valores, llegaron {len(fila_valores)}'
         service, msg = crear_servicio_google_sheets()
         if not service:
             return False, msg
-        titulo = titulo_hoja_desde_range_a1(range_a1)
-        siguiente = siguiente_indice_columna_a(service, spreadsheet_id, titulo)
-        fila_con_indice = [siguiente] + list(fila_valores)
-        body = {'values': [fila_con_indice]}
+        if incluir_indice:
+            titulo = titulo_hoja_desde_range_a1(range_a1)
+            siguiente = siguiente_indice_columna_a(service, spreadsheet_id, titulo)
+            fila_sheet = [siguiente] + list(fila_valores)
+        else:
+            siguiente = None
+            fila_sheet = list(fila_valores)
+        body = {'values': [fila_sheet]}
         service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
             range=range_a1,
@@ -4555,11 +4572,14 @@ def append_fila_google_sheet(spreadsheet_id, range_a1, fila_valores):
             insertDataOption='INSERT_ROWS',
             body=body,
         ).execute()
-        log_info(
-            f'Fila índice={siguiente} añadida a Sheet id={spreadsheet_id} rango={range_a1}',
-            func_name,
-        )
-        return True, f'Fila añadida a Google Sheet (#{siguiente})'
+        if incluir_indice:
+            log_info(
+                f'Fila índice={siguiente} añadida a Sheet id={spreadsheet_id} rango={range_a1}',
+                func_name,
+            )
+            return True, f'Fila añadida a Google Sheet (#{siguiente})'
+        log_info(f'Fila sin índice añadida a Sheet id={spreadsheet_id} rango={range_a1}', func_name)
+        return True, 'Fila añadida a Google Sheet'
     except HttpError as e:
         raw = e.content.decode(errors='replace') if getattr(e, 'content', None) else str(e)
         log_exception(func_name, e, raw[:400])
@@ -4567,6 +4587,62 @@ def append_fila_google_sheet(spreadsheet_id, range_a1, fila_valores):
     except Exception as e:
         log_exception(func_name, e)
         return False, f'Sheets: {str(e)[:200]}'
+
+
+def enviar_tangenciales_a_google_sheets(menciones_tangenciales_data):
+    """Registra menciones tangenciales en la hoja Google Sheets configurada para cada cliente."""
+    func_name = "enviar_tangenciales_a_google_sheets"
+    resultados = []
+    if not menciones_tangenciales_data:
+        return resultados
+    for tang in menciones_tangenciales_data:
+        try:
+            termino = tang.get('termino') or ''
+            cliente = obtener_cliente_por_termino(termino)
+            if not cliente:
+                continue
+            cliente_id = str((cliente or {}).get('id') or '').strip().lower()
+            sheet_id, sheet_range = spreadsheet_y_rango_coincidencias_cliente(cliente)
+            if not sheet_id:
+                continue
+            cliente_nombre = nombre_cliente_mostrar_para_ui(cliente)
+            archivo = tang.get('archivo', '')
+            fecha_gs = extraer_fecha_ddmmyyyy_desde_archivo(archivo)
+            medio_gs = (
+                tang.get('medio')
+                or extraer_nombre_medio_corto_desde_archivo(archivo)
+                or formatear_nombre_medio_desde_ruta(archivo)
+            )
+            texto_gs = (
+                tang.get('texto_evidencia')
+                or tang.get('motivo_sistema')
+                or tang.get('motivo')
+                or ''
+            ).strip() or 'Mención tangencial sin desarrollo'
+            sent_gs = analizar_sentimiento_mencion_heuristica(texto_gs)
+            url_gs = (
+                tang.get('gdrive_url_audio')
+                or tang.get('gdrive_url_txt')
+                or ''
+            ).strip()
+            termino_titulo = capitalizar_marcas_medios_rd_en_texto(str(termino or 'Tangencial'))
+            if cliente_id == 'intrant':
+                fila = [fecha_gs, 'Redaccion', f'Tangencial - {termino_titulo}', texto_gs, medio_gs, sent_gs, url_gs]
+                incluir_indice = False
+            else:
+                texto_tangencial = f"Tangencial: {termino_titulo} | Motivo: {texto_gs}"
+                fila = [fecha_gs, 'Radio (Tangencial)', texto_tangencial, medio_gs, sent_gs, url_gs]
+                incluir_indice = True
+            ok, msg = append_fila_google_sheet(sheet_id, sheet_range, fila, incluir_indice=incluir_indice)
+            resultados.append((cliente_nombre, ok, msg))
+            if ok:
+                log_info(f"Tangencial enviada a Sheets ({cliente_nombre}): {msg}", func_name)
+            else:
+                log_warning(f"Tangencial no enviada a Sheets ({cliente_nombre}): {msg}", func_name)
+        except Exception as e:
+            log_warning(f"Error enviando tangencial a Sheets: {e}", func_name)
+            resultados.append(('desconocido', False, str(e)[:200]))
+    return resultados
 
 def subir_archivo_google_drive(archivo_path, nombre_archivo=None, mime_type=None, folder_id=None):
     """Sube un archivo a Google Drive en la carpeta especificada"""
@@ -5538,7 +5614,22 @@ def verificar_todas_las_apis():
 
 # === GENERAR MD DE COINCIDENCIAS EN CARPETA PROCESADOS ===
 
-def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_sesion, estadisticas_escaneo=None, terminos_buscados=None):
+def escribir_informe_general_radio(contenido_md):
+    """Actualiza el informe general visible fuera de la carpeta de procesados."""
+    func_name = "escribir_informe_general_radio"
+    try:
+        informe_path = INFORME_GENERAL_RADIO_PATH
+        os.makedirs(os.path.dirname(informe_path), exist_ok=True)
+        with open(informe_path, "w", encoding="utf-8") as f:
+            f.write(contenido_md)
+        log_info(f"✅ Informe general actualizado: {informe_path}", func_name)
+        return True, informe_path
+    except Exception as e:
+        log_exception(func_name, e, "Error escribiendo informe general")
+        return False, str(e)
+
+
+def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_sesion, estadisticas_escaneo=None, terminos_buscados=None, menciones_tangenciales_data=None):
     """
     Genera un archivo Markdown con el reporte COMPLETO de la sesión:
     - Estadísticas generales (videos encontrados, procesados, etc.)
@@ -5562,7 +5653,9 @@ def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_s
         # Contadores globales
         total_coincidencias = sum(len(v.get('coincidencias_items', [])) for v in videos_procesados_data)
         total_clips = len(clips_generados_en_sesion)
+        menciones_tangenciales_data = menciones_tangenciales_data or []
         total_videos_con_coincidencias = len(videos_procesados_data)
+        total_tangenciales = len(menciones_tangenciales_data)
         todos_terminos = list(set(
             t for v in videos_procesados_data for t in v.get('terminos_encontrados', [])
         ))
@@ -5602,6 +5695,7 @@ def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_s
         
         md.append(f"| **Videos con coincidencias** | {total_videos_con_coincidencias} |")
         md.append(f"| **Total coincidencias detectadas** | {total_coincidencias} |")
+        md.append(f"| **Total menciones tangenciales** | {total_tangenciales} |")
         md.append(f"| **Total clips generados** | {total_clips} |")
         md.append(f"| **Términos detectados** | {', '.join(todos_terminos) if todos_terminos else 'Ninguno'} |")
         md.append(f"| **Fecha/hora del reporte** | {fecha_legible} |")
@@ -5732,6 +5826,29 @@ def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_s
             md.append(f"")
             md.append(f"---")
             md.append(f"")
+
+        if menciones_tangenciales_data:
+            _, md_tangenciales, _ = construir_tangenciales_narrativo(menciones_tangenciales_data)
+            md.append(f"## ⚠️ Menciones Tangenciales ({total_tangenciales})")
+            md.append(f"")
+            md.append(md_tangenciales)
+            md.append(f"")
+            md.append(f"### Detalle Por Ocurrencia")
+            md.append(f"")
+            md.append(f"| Medio | Término | Motivo | Tiempo en audio | Hora detección |")
+            md.append(f"| --- | --- | --- | --- | --- |")
+            for tang in menciones_tangenciales_data:
+                ts_seg = tang.get('timestamp', 0) or 0
+                ta = formato_posicion_en_audio_segundos(ts_seg)
+                medio_raw = tang.get('medio') or formatear_nombre_medio_desde_ruta(tang.get('archivo', ''))
+                medio = capitalizar_marcas_medios_rd_en_texto(str(medio_raw)).replace('|', '\\|')
+                term = capitalizar_marcas_medios_rd_en_texto(str(tang.get('termino', ''))).replace('|', '\\|')
+                motivo = capitalizar_marcas_medios_rd_en_texto(str(tang.get('motivo', ''))).replace('|', '\\|')
+                hd = _hora_deteccion_formateada(tang).replace('|', '\\|')
+                md.append(f"| {medio} | **{term}** | {motivo} | {ta} | {hd} |")
+            md.append(f"")
+            md.append(f"---")
+            md.append(f"")
         
         # ============================
         # PIE
@@ -5742,6 +5859,9 @@ def generar_md_sesion_coincidencias(videos_procesados_data, clips_generados_en_s
         contenido_final = "\n".join(md)
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(contenido_final)
+        ok_informe, msg_informe = escribir_informe_general_radio(contenido_final)
+        if not ok_informe:
+            log_warning(f"No se pudo actualizar informe general: {msg_informe}", func_name)
         
         log_info(f"✅ MD de sesión guardado: {md_path} ({len(contenido_final)} caracteres, {total_coincidencias} coincidencias)", func_name)
         return True, md_path
@@ -13305,6 +13425,16 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
         with st.spinner("Profundizando motivos tangenciales (DeepSeek)..."):
             enriquecer_motivos_tangenciales_deepseek(menciones_tangenciales_data, func_name)
 
+    if menciones_tangenciales_data:
+        try:
+            res_sheets_tang = enviar_tangenciales_a_google_sheets(menciones_tangenciales_data)
+            exitos_sheets_tang = sum(1 for _, ok, _ in res_sheets_tang if ok)
+            if res_sheets_tang:
+                st.info(f"📊 Tangenciales enviadas a Google Sheets: {exitos_sheets_tang}/{len(res_sheets_tang)}")
+        except Exception as e_sheets_tang:
+            st.warning(f"⚠️ Google Sheets (tangenciales): {e_sheets_tang}")
+            log_warning(f"Error Google Sheets tangenciales: {e_sheets_tang}", func_name)
+
     # Mostrar solo resultados relevantes de la sesión: coincidencias y tangenciales
     if videos_procesados_data or menciones_tangenciales_data:
         st.markdown("---")
@@ -13358,7 +13488,8 @@ def buscar_y_procesar_videos(duracion_clip=90, buffer_anterior=30):
             videos_procesados_data=videos_procesados_data,
             clips_generados_en_sesion=clips_generados_en_sesion,
             estadisticas_escaneo=estadisticas if 'estadisticas' in locals() else None,
-            terminos_buscados=terminos
+            terminos_buscados=terminos,
+            menciones_tangenciales_data=menciones_tangenciales_data,
         )
         if md_sesion_ok:
             st.success(f"📄 **Reporte de sesión guardado:** `{os.path.basename(md_sesion_resultado)}`")
